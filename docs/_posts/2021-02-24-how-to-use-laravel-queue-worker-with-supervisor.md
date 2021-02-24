@@ -1,0 +1,154 @@
+---
+layout: post
+title: "How to use Laravel Queue Worker with Supervisor"
+subtitle: "Monitor your processes and master queues for Laravel"
+date: 2019-11-05
+author: "ekn"
+header-img: "img/post-bg-queue.jpg"
+tags: [web development, laravel, supervisor]
+---
+
+## Why use Supervisor?
+
+When you are developing your Laravel Application, you will most probably make use of **Queues** or more specifically of the `$ php artisan queue:work` command, which enables you to queue jobs such as sending emails. This has the benefit to reduce loading times and also structures your code better. Running the command is easy on local, but when it comes to production deployment, e.g. on a virtual machine with LEMP Stack, then you could encounter some problems. The biggest disadvantage is that the worker could stop running because something failed. Also the worker is not restarting automatically if you have deployed changes.
+
+There is the possibility to run `$ nohup php artisan queue:work --daemon &` as suggested [here](https://stackoverflow.com/questions/28623001/how-to-keep-laravel-queue-system-running-on-server) but comes with similar pitfalls as running the command solely. This is where it comes handy to use a process monitor or manager as [Supervisor](http://supervisord.org/). A popular alternative with NodeJS would be [PM2](https://pm2.io/). In this post I will outline the configuration and usage of Supervisor for Laravel.
+
+
+## Preassumptions
+
+1. I am assuming that you have set up a virtual machine with LEMP Stack, preferrably on Ubuntu 18.04, served by Digital Ocean <a target="_blank" href="https://m.do.co/c/9eaced744763" >Click here to setup a VPS with DO</a>. Your user is **not** root but has root permissions. <br>
+[Tutorial by Digital Ocean to set up LEMP Stack on Ubuntu 18.04](https://www.digitalocean.com/community/tutorials/how-to-install-linux-nginx-mysql-php-lemp-stack-ubuntu-18-04)
+
+2. You have deployed your Laravel Application to the server and configured the webserver accordingly.<br>
+[Tutorial by Digital Ocean deploy Laravel on LEMP with Ubuntu 18.04](https://www.digitalocean.com/community/tutorials/how-to-install-and-configure-laravel-with-lemp-on-ubuntu-18-04)
+
+3. You have configured your queue settings in your `config/queue.php` to use the database queue connection. <br>
+[Official Laravel Docs](https://laravel.com/docs/5.8/queues)
+
+
+## Install & Configure Supervisor
+
+### 1. Installation
+
+To install on Ubuntu 18.04 just run:
+
+```bash
+  $ sudo apt install supervisor
+```
+
+
+Check if the installation was successful with `$ service supervisor status` which return something like this:
+
+
+```unix
+  Active: active (running) since Tue 2019-11-05 15:27:12 UTC; 19s ago
+```
+
+
+### 2. Adjust user permissions for Supervisor
+For Supervisor being able to access the artisan command with sudo, we need to create a new user group and add the active user to it:
+
+```
+  $ sudo groupadd supervisor
+  $ sudo usermod -a -G supervisor $USER
+```
+
+
+
+Then you need to adjust the main supervisor config file to have the necessary permission. For that open the main config file with an editor:
+
+```
+  $ sudo nano /etc/supervisor/supervisord.conf
+```
+
+The contents should be adjusted like this:
+
+```
+; supervisor config file
+
+[unix_http_server]
+file=/var/run/supervisor.sock   ; (the path to the socket file)
+chmod=0770                       ; socket file mode (default 0700)
+chown=root:supervisor
+
+[supervisord]
+logfile=/var/log/supervisor/supervisord.log ; (main log file;default $CWD/supervisord.log)
+pidfile=/var/run/supervisord.pid ; (supervisord pidfile;default supervisord.pid)
+childlogdir=/var/log/supervisor ; ('AUTO' child log dir, default $TEMP)
+
+; the below section must remain in the config file for RPC
+; (supervisorctl/web interface) to work, additional interfaces may be
+; added by defining them in separate rpcinterface: sections
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+[supervisorctl]
+serverurl=unix:///var/run/supervisor.sock ; use a unix:// URL  for a unix socket
+
+; The [include] section can just contain the "files" setting.  This
+; setting can list multiple files (separated by whitespace or
+; newlines).  It can also contain wildcards.  The filenames are
+; interpreted as relative to this file.  Included files *cannot*
+; include files themselves.
+
+[include]
+files = /etc/supervisor/conf.d/*.conf
+```
+
+What has been changed is the socket file mode (`chmod=0770`) and the user group supervisor assigend to root (`chown=root:supervisor`).
+
+After adjusting the main config you will need to restart the service:
+
+```
+  $ sudo service supervisor restart
+```
+
+
+### 3. Add your program configuration file
+Now after Supervisor has been setup correctly, it is time to implement the actual Laravel Queue Worker. For that you will need to create a new program configuration file which should be located in `/etc/supervisor/conf.d`. Create it wit nano:
+
+```
+  $ sudo nano /etc/supervisor/conf.d/laravel-worker.conf
+```
+
+And give it this content:
+
+```
+[program:laravel-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=sudo php /var/www/laravel/artisan queue:work --tries=3 --daemon
+user=root
+autostart=true
+autorestart=true
+numprocs=1
+redirect_stderr=true
+stdout_logfile=/var/www/laravel/storage/logs/test.log
+```
+
+
+The `command` actually calls the Laravel queue worker. Please insert your correct path to your application diretory here. Also read about further configuration in the official Docs.
+
+### 4. Reset supervisor to apply changes
+
+Finally run the following commands to make the changes take effect:
+
+```
+  $ supervisorctl reread
+  $ supervisorctl update
+```
+
+Check if it is running with:
+
+```
+  $ supervisorctl status
+```
+
+If everything is correct, then you should see something like:
+
+```unix
+laravel-worker:queue_00                   RUNNING   pid 2093, uptime 0:01:46
+```
+
+# Credits
+Thanks to [whabash090](https://blog.whabash.com/posts/installing-supervisor-manage-laravel-queue-processes-ubuntu) for writing the initial tutorial.
